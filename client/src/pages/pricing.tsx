@@ -39,20 +39,20 @@ export default function Pricing() {
   const [loading, setLoading] = useState<string | null>(null);
 
   const { data: plans } = useQuery<Plan[]>({
-    queryKey: ["http://localhost:8000/api/subscriptions/plans"],
+    queryKey: [`${apiUrl}/api/subscriptions/plans`],
   });
 
   const { data: currentSubscription } = useQuery({
-    queryKey: ["http://localhost:8000/api/subscriptions/current"],
+    queryKey: [`${apiUrl}/api/subscriptions/current`],
   });
 
   const { data: usage } = useQuery({
-    queryKey: ["http://localhost:8000/api/subscriptions/usage"],
+    queryKey: [`${apiUrl}/api/subscriptions/usage`],
   });
 
   const createPaymentMutation = useMutation({
     mutationFn: async (planTier: string) => {
-      const res = await apiRequest("POST", `${apiUrl}/api/subscriptions/create-payment`, { plan_tier: planTier });
+  const res = await apiRequest("POST", `${apiUrl}/subscriptions/create-payment`, { plan_tier: planTier });
       return await res.json();
     },
     onSuccess: (data) => {
@@ -116,28 +116,28 @@ export default function Pricing() {
           {usage && typeof usage === "object" && "current_usage" in usage && "limit" in usage && "tier" in usage && (
             (() => {
               const u = usage as { current_usage: number; limit: number; tier: string };
+              const percent = Math.min(100, (u.current_usage / u.limit) * 100);
+              let barColor = "bg-green-500";
+              if (percent >= 80 && percent < 100) barColor = "bg-yellow-500";
+              if (percent >= 100) barColor = "bg-red-500";
               return (
                 <div className="bg-white rounded-lg shadow p-6 mb-8">
                   <div className="mb-4">
                     <h2 className="text-lg font-semibold mb-2">Current Usage</h2>
-                    <p className="text-sm text-gray-500">
+                    <p className={`text-sm ${u.current_usage > u.limit ? 'text-red-700 font-bold' : 'text-gray-500'}`}>
                       {u.current_usage} / {u.limit} leads used
+                      {u.current_usage > u.limit && <span className="ml-2 text-red-600 font-bold">Over Limit</span>}
                     </p>
                     <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
-                      {(() => {
-                        const percent = Math.min(100, (u.current_usage / u.limit) * 100);
-                        let barColor = "bg-green-500";
-                        if (percent >= 80 && percent < 100) barColor = "bg-yellow-500";
-                        if (percent >= 100) barColor = "bg-red-500";
-                        return (
-                          <div
-                            className={`${barColor} h-2 rounded-full`}
-                            style={{ width: `${percent}%` }}
-                          ></div>
-                        );
-                      })()}
+                      <div
+                        className={`${barColor} h-2 rounded-full`}
+                        style={{ width: `${percent}%` }}
+                      ></div>
                     </div>
                     <span className="text-xs font-medium text-blue-600 mt-2 inline-block">{u.tier.toUpperCase()}</span>
+                    {u.current_usage > u.limit && (
+                      <div className="mt-2 text-xs text-red-700 font-semibold">You have exceeded your monthly credit limit!</div>
+                    )}
                   </div>
                 </div>
               );

@@ -8,7 +8,7 @@ from schemas import MessageGenRequest, MessageGenResponse
 import openai
 import os
 
-router = APIRouter(tags=["ai"])
+router = APIRouter(prefix="/api", tags=["ai"])
 
 openai.api_key = os.environ.get("OPENAI_API_KEY", "sk-xxx")
 

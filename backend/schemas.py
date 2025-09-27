@@ -65,7 +65,7 @@ class LeadOut(BaseModel):
     message_text: Optional[str]
     email: Optional[str]
     email_confidence: Optional[int]
-    campaign_id: int
+    campaign_id: Optional[int]
 
 class LeadListResponse(BaseModel):
     leads: List[LeadOut]

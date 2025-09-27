@@ -10,11 +10,12 @@ import { apiRequest } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Search, Filter, Download, Upload, Eye, Edit, Trash2, Globe } from "lucide-react";
+import { Loader2, Search, Filter, Download, Upload, Eye, Edit, Trash2, Globe, ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, History,Trash } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
-const apiUrl = import.meta.env.VITE_API_URL;
+const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
 interface Lead {
   id: number;
   first_name: string;
@@ -29,22 +30,31 @@ interface Lead {
     campaign_id: number;
   }
 export default function Leads() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [enrichErrors, setEnrichErrors] = useState<{[leadId: number]: string}>({});
   const enrichEmailMutation = useMutation({
     mutationFn: async (leadId: number) => {
-      const res = await apiRequest("POST", `${apiUrl}/api/enrich-email`, { leadId });
+  const res = await apiRequest("POST", `${apiUrl}/api/leads/enrich-email`, { leadId });
       return await res.json();
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["http://localhost:8000/api/leads/list"] });
-      toast({ title: "Email enriched", description: data.email ? `Email: ${data.email} (Confidence: ${data.confidence})` : data.message });
+    onSuccess: (data, leadId) => {
+      queryClient.invalidateQueries({ queryKey: [`${apiUrl}/api/leads/list`] });
+      if (data.email) {
+        toast({ title: "Email enriched", description: `Email: ${data.email} (Confidence: ${data.confidence})` });
+        setEnrichErrors(prev => ({ ...prev, [leadId]: "" }));
+      } else {
+        setEnrichErrors(prev => ({ ...prev, [leadId]: data.message || "No email found." }));
+        toast({ title: "Enrichment failed", description: data.message || "No email found.", variant: "destructive" });
+      }
     },
-    onError: (error: Error) => {
+    onError: (error: Error, leadId) => {
+      setEnrichErrors(prev => ({ ...prev, [leadId]: error.message }));
       toast({ title: "Enrichment failed", description: error.message, variant: "destructive" });
     },
   });
-  // ...existing code...
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [enrichmentFilter, setEnrichmentFilter] = useState("all");
@@ -60,35 +70,138 @@ export default function Leads() {
   });
   // Removed web scrape modal and related states
   const [showUnassigned, setShowUnassigned] = useState(false);
-  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
-  const [selectedCampaign, setSelectedCampaign] = useState("");
-  const [assigning, setAssigning] = useState(false);
+  // Removed campaign assignment state per requirement
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
+  const [companyFilter, setCompanyFilter] = useState("");
+  const [jobTitleFilter, setJobTitleFilter] = useState("");
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
+  const [backgroundTasks, setBackgroundTasks] = useState<{[key: string]: {status: string, result?: any}}>({});
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [selectedLeadHistory, setSelectedLeadHistory] = useState<any[]>([]);
+  const [historyLeadId, setHistoryLeadId] = useState<number | null>(null); 
+  const [batch, setBatch] = useState<any[]>([]);
 
-  // Fetch campaigns for assignment
-  const { data: campaigns } = useQuery<any[]>({
-    queryKey: ["http://localhost:8000/api/email-campaigns"],
-  });
-  // Fetch leads with unassigned filter
-  const { data: leads, isLoading, refetch } = useQuery<{leads: Lead[]}>({
-    queryKey: ["http://localhost:8000/api/leads/list", showUnassigned],
+  
+ const deleteBatchMutation = useMutation({
+  mutationFn: async (id: number) => {
+    const token = localStorage.getItem("access_token"); // or however you store it
+
+    const res = await fetch(`/api/leads/batches/${id}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`, // add auth header
+      },
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to delete batch");
+    }
+
+    return id;
+  },
+ onSuccess: (deletedId) => {
+    // Refresh the batches query automatically
+    queryClient.invalidateQueries(["batches"]);
+
+    // Optional: clear selection if needed
+    if (selectedBatchId === deletedId) {
+      setSelectedBatchId(null);
+    }
+  },
+});
+
+
+  // Fetch lead batches for filter buttons
+  type LeadBatch = { id: number; name: string; created_at?: string; count?: number };
+  const { data: batchesData } = useQuery<{ batches: LeadBatch[] }>({
+    queryKey: ["lead-batches"],
     queryFn: async () => {
-      const res = await apiRequest("GET", `${apiUrl}/api/leads/list?unassigned=${showUnassigned}`);
+      // Use stats endpoint for counts
+      const res = await apiRequest("GET", `${apiUrl}/api/leads/batches-stats`);
       return await res.json();
     },
   });
+  const batches: LeadBatch[] = batchesData?.batches || [];
+  const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
+  const [showAllBatches, setShowAllBatches] = useState(false);
+
+  // Sync selected batch with URL (?batch_id=)
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const param = url.searchParams.get("batch_id");
+    if (param) {
+      const id = Number(param);
+      if (!Number.isNaN(id)) setSelectedBatchId(id);
+    }
+  }, []);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selectedBatchId) {
+      url.searchParams.set("batch_id", String(selectedBatchId));
+    } else {
+      url.searchParams.delete("batch_id");
+    }
+    navigate(`${url.pathname}${url.search}`, { replace: true });
+  }, [selectedBatchId, navigate]);
+  // Fetch leads with unassigned filter
+  const { data: leadsData, isLoading, refetch } = useQuery<{leads: Lead[], total?: number}>({
+    queryKey: [
+      "leads-list",
+      page,
+      pageSize,
+      showUnassigned,
+      statusFilter,
+      enrichmentFilter,
+      searchTerm,
+      companyFilter,
+      jobTitleFilter,
+      selectedBatchId,
+    ],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      params.append("offset", String(page * pageSize));
+      params.append("limit", String(pageSize));
+      if (showUnassigned) params.append("unassigned", "true");
+      if (statusFilter !== "all") params.append("status", statusFilter);
+      if (enrichmentFilter === "enriched") params.append("enriched", "true");
+      if (enrichmentFilter === "not_enriched") params.append("enriched", "false");
+      if (searchTerm) params.append("search", searchTerm);
+      if (companyFilter) params.append("company", companyFilter);
+      if (jobTitleFilter) params.append("job_title", jobTitleFilter);
+      if (selectedBatchId) params.append("batch_id", String(selectedBatchId));
+      const res = await apiRequest("GET", `${apiUrl}/api/leads/list?${params.toString()}`);
+      return await res.json();
+    },
+  });
+  const leads: Lead[] = leadsData && Array.isArray(leadsData.leads) ? leadsData.leads : [];
+  const totalLeads: number = leadsData && typeof leadsData.total === 'number' ? leadsData.total : leads.length;
 
   const { data: usage } = useQuery<{ current_usage: number; limit: number; tier: string }>({
-    queryKey: ["http://localhost:8000/api/subscriptions/usage"],
+    queryKey: [`${apiUrl}/api/subscriptions/usage`],
+  });
+
+  // Fetch lead history
+  const { data: leadHistory, isLoading: historyLoading } = useQuery<any[]>({
+    queryKey: ["lead-history", historyLeadId],
+    queryFn: async () => {
+      if (!historyLeadId) return [];
+  const res = await apiRequest("GET", `${apiUrl}/api/leads/${historyLeadId}/history`);
+      return await res.json();
+    },
+    enabled: !!historyLeadId,
   });
 
   const updateLeadMutation = useMutation({
     mutationFn: async ({ leadId, status }: { leadId: number; status: string }) => {
-      const res = await apiRequest("PUT", `${apiUrl}/api/${leadId}`, { status });
+  const res = await apiRequest("PUT", `${apiUrl}/api/leads/${leadId}`, { status });
       return await res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["http://localhost:8000/api/leads/list"] });
-      queryClient.invalidateQueries({ queryKey: ["http://localhost:8000/api/subscriptions/usage"] });
+  queryClient.invalidateQueries({ queryKey: [`${apiUrl}/api/leads/list`] });
+  queryClient.invalidateQueries({ queryKey: [`${apiUrl}/api/subscriptions/usage`] });
       
       if (data.warning === "approaching_limit") {
         toast({
@@ -129,11 +242,11 @@ export default function Leads() {
 
   const deleteLeadMutation = useMutation({
     mutationFn: async (leadId: number) => {
-      const res = await apiRequest("DELETE", `${apiUrl}/api/${leadId}`);
+  const res = await apiRequest("DELETE", `${apiUrl}/api/leads/${leadId}`);
       return await res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["http://localhost:8000/api/leads/list"] });
+  queryClient.invalidateQueries({ queryKey: [`${apiUrl}/api/leads/list`] });
       toast({
         title: "Lead deleted",
         description: "Lead has been removed successfully.",
@@ -151,7 +264,7 @@ export default function Leads() {
   // Add mutation for scraping LinkedIn leads
   const scrapeLeadsMutation = useMutation({
     mutationFn: async (filters: typeof scrapeForm) => {
-      const res = await apiRequest("POST", `${apiUrl}/api/scrape-linkedin-leads`, filters);
+  const res = await apiRequest("POST", `${apiUrl}/api/leads/scrape-linkedin-leads`, filters);
       return await res.json();
     },
     onSuccess: (data) => {
@@ -170,10 +283,57 @@ export default function Leads() {
     },
   });
 
+  // Bulk enrichment mutation
+  const bulkEnrichMutation = useMutation({
+    mutationFn: async (leadIds: number[]) => {
+  const res = await apiRequest("POST", `${apiUrl}/api/leads/bulk-enrich-bg`, { leadIds });
+      return await res.json();
+    },
+    onSuccess: (data) => {
+      setBackgroundTasks(prev => ({...prev, [data.task_id]: {status: "pending"}}));
+      toast({ title: "Bulk enrichment started", description: "Enrichment is running in the background. Check status below." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Bulk enrichment failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Bulk delete mutation
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (leadIds: number[]) => {
+  const res = await apiRequest("POST", `${apiUrl}/api/leads/bulk-delete`, { leadIds });
+      return await res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["leads-list"] });
+      toast({ title: "Bulk delete successful", description: data.message });
+      setSelectedLeads([]);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Bulk delete failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Bulk update mutation
+  const bulkUpdateMutation = useMutation({
+    mutationFn: async ({ leadIds, updates }: { leadIds: number[], updates: any }) => {
+  const res = await apiRequest("POST", `${apiUrl}/api/leads/bulk-update`, { leadIds, updates });
+      return await res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["leads-list"] });
+      toast({ title: "Bulk update successful", description: data.message });
+      setSelectedLeads([]);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Bulk update failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   // Export leads as CSV (with auth)
   const handleExport = async () => {
     const token = localStorage.getItem("access_token");
-    const url = `${apiUrl}/api/export?unassigned=${showUnassigned}`;
+    const url = `${apiUrl}/api/leads/export?unassigned=${showUnassigned}`;
     if (!token) {
       toast({ title: "Not authenticated", description: "Please log in to export leads.", variant: "destructive" });
       return;
@@ -204,11 +364,13 @@ export default function Leads() {
     return input;
   })[0];
 
-  // Show campaign select dialog before upload
+  // Show upload dialog
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadCampaign, setUploadCampaign] = useState("");
+  // Removed uploadCampaign state
+  const [uploadBatchName, setUploadBatchName] = useState("");
+  const [uploadRowErrors, setUploadRowErrors] = useState<any[]>([]);
 
   const handleUploadClick = () => {
     if (fileInputRef) {
@@ -228,47 +390,120 @@ export default function Leads() {
 
   // Read CSV and upload to backend
   const handleUploadLeads = async () => {
-    if (!pendingFile || !uploadCampaign) return;
+  if (!pendingFile || !uploadBatchName.trim()) return;
     setUploading(true);
     try {
       const text = await pendingFile.text();
-      const res = await apiRequest("POST", `${apiUrl}/api/upload`, {
+      const res = await apiRequest("POST", `${apiUrl}/api/leads/upload`, {
         csvData: text,
-        campaignId: uploadCampaign,
+        batch_name: uploadBatchName.trim(),
       });
       const data = await res.json();
       toast({ title: data.message, description: data.warning ? data.warning : undefined });
-      setUploadDialogOpen(false);
-      setPendingFile(null);
-      setUploadCampaign("");
-      refetch();
+    setUploadRowErrors(Array.isArray(data.row_errors) ? data.row_errors : []);
+    setUploadDialogOpen(false);
+    setPendingFile(null);
+  // Removed setUploadCampaign
+    setUploadBatchName("");
+    // Reset filters and pagination so new leads are visible
+    setPage(0);
+    setStatusFilter("all");
+    setEnrichmentFilter("all");
+    setSearchTerm("");
+    setCompanyFilter("");
+    setJobTitleFilter("");
+    refetch();
+      // Refresh batches after successful upload
+      queryClient.invalidateQueries({ queryKey: ["lead-batches"] });
+    queryClient.invalidateQueries({ queryKey: [`${apiUrl}/api/subscriptions/usage`] });
+      // CTA: Offer to view the uploaded batch immediately
+      const uploadedName = (uploadBatchName || "").trim();
+      if (uploadedName) {
+        // Try to find the batch after refetch delay
+        setTimeout(async () => {
+          try {
+            const res = await apiRequest("GET", `${apiUrl}/api/leads/batches-stats`);
+            const data = await res.json();
+            const match = (data?.batches || []).find((b: any) => b.name === uploadedName);
+            if (match) {
+              toast({
+                title: `Batch "${uploadedName}" created`,
+                description: "Click to view this batch",
+                action: (
+                  <Button size="sm" variant="outline" onClick={() => setSelectedBatchId(match.id)}>
+                    View batch
+                  </Button>
+                ),
+              });
+            }
+          } catch {}
+        }, 500);
+      }
     } catch (e: any) {
       toast({ title: "Upload failed", description: e.message, variant: "destructive" });
     } finally {
       setUploading(false);
     }
   };
-  // Assign selected leads to campaign
-  const handleAssignToCampaign = async () => {
-    setAssigning(true);
-    try {
-      const res = await apiRequest("POST", `${apiUrl}/api/assign-to-campaign`, {
-        leadIds: selectedLeads,
-        campaignId: selectedCampaign,
-      });
-      const data = await res.json();
-      toast({ title: "Leads assigned", description: data.message });
-      setAssignDialogOpen(false);
-      setSelectedLeads([]);
-      refetch();
-    } catch (e: any) {
-      toast({ title: "Assign failed", description: e.message, variant: "destructive" });
-    } finally {
-      setAssigning(false);
+
+  // Bulk action handlers
+  const handleBulkEnrich = () => {
+    if (selectedLeads.length === 0) {
+      toast({ title: "No leads selected", description: "Please select leads to enrich.", variant: "destructive" });
+      return;
+    }
+    bulkEnrichMutation.mutate(selectedLeads);
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedLeads.length === 0) {
+      toast({ title: "No leads selected", description: "Please select leads to delete.", variant: "destructive" });
+      return;
+    }
+    if (confirm(`Are you sure you want to delete ${selectedLeads.length} leads?`)) {
+      bulkDeleteMutation.mutate(selectedLeads);
     }
   };
 
-  const filteredLeads = leads?.leads?.filter(lead => {
+  const handleBulkStatusUpdate = (newStatus: string) => {
+    if (selectedLeads.length === 0) {
+      toast({ title: "No leads selected", description: "Please select leads to update.", variant: "destructive" });
+      return;
+    }
+    bulkUpdateMutation.mutate({ leadIds: selectedLeads, updates: { status: newStatus } });
+  };
+
+  const handleViewHistory = (leadId: number) => {
+    setHistoryLeadId(leadId);
+    setHistoryDialogOpen(true);
+  };
+
+  // Poll background task status
+  useEffect(() => {
+    const pollTasks = () => {
+      Object.keys(backgroundTasks).forEach(async (taskId) => {
+        if (backgroundTasks[taskId].status === "pending") {
+          try {
+            const res = await apiRequest("GET", `${apiUrl}/api/leads/task-status/${taskId}`);
+            const data = await res.json();
+            setBackgroundTasks(prev => ({...prev, [taskId]: data}));
+            if (data.status === "done") {
+              queryClient.invalidateQueries({ queryKey: ["leads-list"] });
+              toast({ title: "Background task completed", description: "Enrichment results are now available." });
+            } else if (data.status === "error") {
+              toast({ title: "Background task failed", description: data.result, variant: "destructive" });
+            }
+          } catch (e) {
+            console.error("Failed to poll task status:", e);
+          }
+        }
+      });
+    };
+    const interval = setInterval(pollTasks, 2000);
+    return () => clearInterval(interval);
+  }, [backgroundTasks, queryClient, toast]);
+
+  const filteredLeads = leads?.filter(lead => {
     const matchesSearch = 
       lead.first_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       lead.last_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -426,13 +661,44 @@ export default function Leads() {
                     </SelectContent>
                   </Select>
                 </div>
+                <Input
+                  placeholder="Filter by company"
+                  value={companyFilter}
+                  onChange={e => setCompanyFilter(e.target.value)}
+                  className="w-48"
+                  data-testid="input-company-filter"
+                />
+                <Input
+                  placeholder="Filter by job title"
+                  value={jobTitleFilter}
+                  onChange={e => setJobTitleFilter(e.target.value)}
+                  className="w-48"
+                  data-testid="input-jobtitle-filter"
+                />
               </div>
               <div className="flex flex-wrap gap-2">
                 {/* Bulk Actions */}
                 {selectedLeads.length > 0 && (
-                  <Button size="sm" variant="default" onClick={() => setAssignDialogOpen(true)} data-testid="button-bulk-assign">
-                    Assign Selected to Campaign
-                  </Button>
+                  <>
+                    <Button size="sm" variant="default" onClick={handleBulkEnrich} disabled={bulkEnrichMutation.isPending} data-testid="button-bulk-enrich">
+                      {bulkEnrichMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : "Bulk Enrich"}
+                    </Button>
+                    <Button size="sm" variant="destructive" onClick={handleBulkDelete} disabled={bulkDeleteMutation.isPending} data-testid="button-bulk-delete">
+                      {bulkDeleteMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : "Bulk Delete"}
+                    </Button>
+                    <Select onValueChange={handleBulkStatusUpdate}>
+                      <SelectTrigger className="w-40" data-testid="select-bulk-status">
+                        <SelectValue placeholder="Bulk Update Status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pending">Set to Pending</SelectItem>
+                        <SelectItem value="contacted">Set to Contacted</SelectItem>
+                        <SelectItem value="replied">Set to Replied</SelectItem>
+                        <SelectItem value="connected">Set to Connected</SelectItem>
+                        <SelectItem value="failed">Set to Failed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </>
                 )}
                 <Button variant="outline" size="sm" onClick={handleExport} data-testid="button-export-leads">
                   <Download className="h-4 w-4 mr-2" />
@@ -458,6 +724,15 @@ export default function Leads() {
                   <Search className="h-4 w-4 mr-2" />
                   Scrape  Leads
                 </Button>
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={handleUploadClick}
+                  data-testid="button-upload-leads"
+                >
+                  <Upload className="h-4 w-4 mr-2" />
+                  Upload Leads
+                </Button>
                      {/* <Button size="sm" variant="outline" onClick={() => setShowUnassigned(v => !v)} data-testid="button-toggle-unassigned">
                   {showUnassigned ? "Show All Leads" : "Show Unassigned Leads"}
                 </Button> */}
@@ -470,6 +745,43 @@ export default function Leads() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Batch Filter Buttons */}
+        {batches.length > 0 && (
+          <Card className="mb-4 shadow-sm">
+            <CardContent className="p-4">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant={selectedBatchId === null ? "default" : "outline"}
+                  onClick={() => setSelectedBatchId(null)}
+                >
+                  All Batches
+                </Button>
+                
+                {(showAllBatches ? batches : batches.slice(0, 6)).map((b) => (
+                   <div key={b.id} className="flex items-center gap-1">
+                  <Button
+                        size="sm"
+                         variant={selectedBatchId === b.id ? "default" : "outline"}
+                        onClick={() => setSelectedBatchId(b.id)}
+                         >
+                   {b.name}{typeof b.count === "number" ? ` (${b.count})` : ""}
+               </Button>
+               <Button
+               size="sm"
+               variant="ghost"
+               className="text-red-600 hover:text-red-800"
+                onClick={() => deleteBatchMutation.mutate(b.id)}
+                >
+                 <Trash className="h-4 w-4" />
+                 </Button>
+                   </div>
+                    ))} 
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Leads Table */}
         <Card className="shadow-sm">
@@ -496,31 +808,6 @@ export default function Leads() {
                   <Upload className="h-4 w-4 mr-2" />
                   Upload Leads
                 </Button>
-      {/* Upload Leads Dialog */}
-      <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Upload Leads to Campaign</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>File: {pendingFile?.name}</div>
-            <Select value={uploadCampaign} onValueChange={setUploadCampaign}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select Campaign" />
-              </SelectTrigger>
-              <SelectContent>
-                {campaigns?.map((c: any) => (
-                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button onClick={handleUploadLeads} disabled={!uploadCampaign || uploading}>
-              {uploading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
-              Upload
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
               </div>
             ) : (
               <Table>
@@ -543,7 +830,7 @@ export default function Leads() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredLeads.map((lead) => (
+                  {filteredLeads.map((lead: Lead) => (
                     <TableRow key={lead.id} data-testid={`lead-row-${lead.id}`}>
                       <TableCell>
                         <input
@@ -586,15 +873,20 @@ export default function Leads() {
                             )}
                           </div>
                         ) : (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => enrichEmailMutation.mutate(lead.id)}
-                            disabled={enrichEmailMutation.isPending}
-                            data-testid={`button-enrich-email-${lead.id}`}
-                          >
-                            {enrichEmailMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : "Enrich Email"}
-                          </Button>
+                          <div className="flex flex-col gap-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => enrichEmailMutation.mutate(lead.id)}
+                              disabled={enrichEmailMutation.isPending}
+                              data-testid={`button-enrich-email-${lead.id}`}
+                            >
+                              {enrichEmailMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : "Enrich Email"}
+                            </Button>
+                            {enrichErrors[lead.id] && (
+                              <span className="text-xs text-red-600">{enrichErrors[lead.id]}</span>
+                            )}
+                          </div>
                         )}
                       </TableCell>
                       <TableCell>
@@ -620,16 +912,10 @@ export default function Leads() {
                             variant="ghost"
                             size="sm"
                             data-testid={`button-view-lead-${lead.id}`}
+                            onClick={() => handleViewHistory(lead.id)}
                           >
                             <Eye className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            data-testid={`button-edit-lead-${lead.id}`}
-                          >
-                            <Edit className="h-4 w-4" />
-                          </Button>
+                          </Button> 
                           <Button
                             variant="ghost"
                             size="sm"
@@ -647,6 +933,108 @@ export default function Leads() {
             )}
           </CardContent>
         </Card>
+        {/* Pagination controls */}
+        <div className="flex items-center gap-2 mt-4">
+          <Button size="sm" variant="outline" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>
+            <ChevronLeft className="h-4 w-4" /> Prev
+          </Button>
+          <span>Page {page + 1} of {Math.max(1, Math.ceil(totalLeads / pageSize))}</span>
+          <Button size="sm" variant="outline" onClick={() => setPage(p => p + 1)} disabled={(page + 1) * pageSize >= totalLeads}>
+            Next <ChevronRight className="h-4 w-4" />
+          </Button>
+          <Select value={String(pageSize)} onValueChange={v => { setPageSize(Number(v)); setPage(0); }}>
+            <SelectTrigger className="w-24 ml-2">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="10">10</SelectItem>
+              <SelectItem value="20">20</SelectItem>
+              <SelectItem value="50">50</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Upload Leads Dialog */}
+        <Dialog open={uploadDialogOpen} onOpenChange={open => { if (!open) { setUploadDialogOpen(false); setUploadBatchName(""); } }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Upload Leads</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <Input
+                placeholder="Batch Name (required)"
+                value={uploadBatchName}
+                onChange={e => setUploadBatchName(e.target.value)}
+                data-testid="input-batch-name"
+              />
+              {/* Campaign dropdown removed as per requirements */}
+              <div className="text-sm text-muted-foreground">File: {pendingFile?.name}</div>
+            </div>
+            <DialogFooter className="mt-6">
+              <Button onClick={handleUploadLeads} disabled={uploading || !uploadBatchName.trim()}>
+                {uploading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                Upload
+              </Button>
+              <Button variant="outline" onClick={() => setUploadDialogOpen(false)}>Cancel</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog open={uploadRowErrors.length > 0} onOpenChange={open => { if (!open) setUploadRowErrors([]); }}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Upload Row Errors</DialogTitle>
+            </DialogHeader>
+            <div className="max-h-96 overflow-y-auto">
+              {uploadRowErrors.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">No errors.</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr>
+                      <th className="text-left p-2">Row</th>
+                      <th className="text-left p-2">Reason</th>
+                      <th className="text-left p-2">Data</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {uploadRowErrors.map((err, i) => (
+                      <tr key={i} className="border-b">
+                        <td className="p-2">{err.row}</td>
+                        <td className="p-2">{err.reason}</td>
+                        <td className="p-2 whitespace-pre-wrap">{JSON.stringify(err.row_data)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Background Task Status */}
+        {Object.keys(backgroundTasks).length > 0 && (
+          <Card className="mt-4">
+            <CardHeader>
+              <CardTitle>Background Tasks</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {Object.entries(backgroundTasks).map(([taskId, task]) => (
+                <div key={taskId} className="flex items-center gap-2 mb-2">
+                  {task.status === "pending" && <Clock className="h-4 w-4 text-yellow-500" />}
+                  {task.status === "done" && <CheckCircle className="h-4 w-4 text-green-500" />}
+                  {task.status === "error" && <XCircle className="h-4 w-4 text-red-500" />}
+                  <span>Task {taskId.slice(0, 8)}: {task.status}</span>
+                  {task.result && (
+                    <span className="text-sm text-muted-foreground">
+                      {task.status === "done" && `Enriched: ${task.result.enriched?.length || 0}, Failed: ${task.result.failed?.length || 0}`}
+                      {task.status === "error" && task.result}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
       </main>
       <Dialog open={scrapeModalOpen} onOpenChange={setScrapeModalOpen}>
         <DialogContent>
@@ -717,6 +1105,54 @@ export default function Leads() {
           </div>
         </DialogContent>
       </Dialog> */}
+
+      {/* Lead History Dialog */}
+      <Dialog open={historyDialogOpen} onOpenChange={setHistoryDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Lead History</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-96 overflow-y-auto">
+            {historyLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin" />
+              </div>
+            ) : leadHistory && leadHistory.length > 0 ? (
+              <div className="space-y-4">
+                {leadHistory.map((entry, index) => (
+                  <div key={index} className="border rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium capitalize">{entry.action}</span>
+                      <span className="text-sm text-muted-foreground">
+                        {new Date(entry.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                    {entry.field && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">Field:</span> {entry.field}
+                      </div>
+                    )}
+                    {entry.old_value && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">From:</span> {entry.old_value}
+                      </div>
+                    )}
+                    {entry.new_value && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">To:</span> {entry.new_value}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                No history available for this lead.
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

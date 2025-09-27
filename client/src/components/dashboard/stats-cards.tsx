@@ -1,10 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@/components/ui/skeleton"; 
+
+const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export function StatsCards() {
   const { data: stats, isLoading } = useQuery<{sent: number, accepted: number, replied: number, failed: number}>({
-    queryKey: ["/api/campaigns/stats"],
+    queryKey: [`${apiUrl}/api/campaigns/stats`],
   });
 
   const totalLeads = (stats?.sent || 0) + (stats?.accepted || 0) + (stats?.replied || 0) + (stats?.failed || 0);

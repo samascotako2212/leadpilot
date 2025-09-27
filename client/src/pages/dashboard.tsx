@@ -1,3 +1,4 @@
+
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { LeadPilotLogo } from "@/components/ui/LeadPilotLogo";
 import { StatsCards } from "@/components/dashboard/stats-cards";
@@ -10,14 +11,16 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Bell, LogOut } from "lucide-react";
+import { LogOut } from "lucide-react";
+import { NotificationDropdown } from "@/components/dashboard/notification-dropdown";
+const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 
 export default function Dashboard() {
   const { user, logoutMutation } = useAuth();
   const [showUploadModal, setShowUploadModal] = useState(false);
   const { data: usageRaw } = useQuery<{ tier: string; current_usage: number; limit: number; remaining: number }>({
-    queryKey: ["http://localhost:8000/api/subscriptions/usage"],
+    queryKey: [`${apiUrl}/api/subscriptions/usage`],
   });
   const usage = usageRaw && typeof usageRaw === 'object' && 'tier' in usageRaw ? usageRaw : undefined;
 
@@ -32,11 +35,8 @@ export default function Dashboard() {
             <span className="hidden sm:inline text-xl font-bold text-blue-700">LeadPilot Dashboard</span>
           </div>
           <div className="flex items-center gap-4">
-            {/* Notification Icon */}
-            <button className="relative" aria-label="Notifications">
-              <Bell className="h-6 w-6 text-blue-600" />
-              <span className="absolute top-0 right-0 block h-2 w-2 rounded-full bg-red-500"></span>
-            </button>
+            {/* Notification Dropdown */}
+            {user?.id && <NotificationDropdown userId={user.id} />}
             <div className="flex items-center gap-3">
               <span className="text-sm font-medium" data-testid="text-user-email">{user?.email}</span>
               <Button 
@@ -70,37 +70,42 @@ export default function Dashboard() {
                 <div>
                   <div className="flex justify-between text-sm mb-2">
                     <span>Leads Used</span>
-                    <span>{usage.current_usage} / {usage.limit}</span>
+                    <span className={usage.current_usage > usage.limit ? 'text-red-700 font-bold' : ''}>
+                      {usage.current_usage} / {usage.limit}
+                      {usage.current_usage > usage.limit && <span className="ml-2">Over Limit</span>}
+                    </span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2">
                     <div
                       className={`h-2 rounded-full transition-all duration-300 ${
-                        usage.current_usage >= usage.limit 
-                          ? 'bg-red-500' 
-                          : usage.current_usage >= usage.limit * 0.8 
-                          ? 'bg-yellow-500' 
+                        usage.current_usage > usage.limit
+                          ? 'bg-red-500'
+                          : usage.current_usage >= usage.limit * 0.8
+                          ? 'bg-yellow-500'
                           : 'bg-blue-500'
                       }`}
                       style={{ width: `${Math.min(100, (usage.current_usage / usage.limit) * 100)}%` }}
                     ></div>
                   </div>
                 </div>
-                {usage.current_usage >= usage.limit * 0.8 && (
-                  <div className="flex flex-col sm:flex-row items-center justify-between p-3 bg-yellow-50 border border-yellow-200 rounded-md gap-2">
+                {(usage.current_usage >= usage.limit * 0.8 || usage.current_usage > usage.limit) && (
+                  <div className={`flex flex-col sm:flex-row items-center justify-between p-3 rounded-md gap-2 ${usage.current_usage > usage.limit ? 'bg-red-50 border border-red-200' : 'bg-yellow-50 border border-yellow-200'}`}>
                     <div>
-                      <p className="text-sm font-medium text-yellow-800">
-                        {usage.current_usage >= usage.limit ? 'Limit Reached' : 'Approaching Limit'}
+                      <p className={`text-sm font-medium ${usage.current_usage > usage.limit ? 'text-red-800' : 'text-yellow-800'}`}>
+                        {usage.current_usage > usage.limit ? 'Over Limit' : usage.current_usage >= usage.limit ? 'Limit Reached' : 'Approaching Limit'}
                       </p>
-                      <p className="text-xs text-yellow-600">
-                        {usage.remaining} leads remaining
+                      <p className={`text-xs ${usage.current_usage > usage.limit ? 'text-red-600' : 'text-yellow-600'}`}>
+                        {usage.current_usage > usage.limit
+                          ? 'You have exceeded your monthly credit limit!'
+                          : `${usage.remaining} leads remaining`}
                       </p>
                     </div>
-                    <Button 
-                      size="sm" 
-                      variant={usage.current_usage >= usage.limit ? "destructive" : "outline"}
+                    <Button
+                      size="sm"
+                      variant={usage.current_usage > usage.limit ? "destructive" : usage.current_usage >= usage.limit ? "destructive" : "outline"}
                       onClick={() => window.location.href = "/pricing"}
                     >
-                      {usage.current_usage >= usage.limit ? 'Upgrade Now' : 'Upgrade Plan'}
+                      {usage.current_usage > usage.limit ? 'Upgrade Now' : usage.current_usage >= usage.limit ? 'Upgrade Now' : 'Upgrade Plan'}
                     </Button>
                   </div>
                 )}

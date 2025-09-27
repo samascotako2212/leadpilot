@@ -10,14 +10,23 @@ import stripe
 from datetime import datetime, timedelta
 from typing import Dict, Any
 
-router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
+router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 
 
-# Initialize Stripe
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-if not STRIPE_SECRET_KEY:
-    raise ValueError("STRIPE_SECRET_KEY environment variable is required")
-stripe.api_key = STRIPE_SECRET_KEY
+
+# Stripe initialization helper
+def get_stripe_api_key():
+    test_mode = os.getenv("STRIPE_TEST_MODE", "false").lower() == "true"
+    if test_mode:
+        key = os.getenv("STRIPE_TEST_SECRET_KEY")
+        if not key:
+            raise HTTPException(status_code=500, detail="STRIPE_TEST_SECRET_KEY environment variable is required for test mode")
+    else:
+        key = os.getenv("STRIPE_SECRET_KEY")
+        if not key:
+            raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY environment variable is required")
+    stripe.api_key = key
+    return key
 
 # Subscription plans
 SUBSCRIPTION_PLANS = {
@@ -75,6 +84,7 @@ async def create_payment(
     if plan_tier not in SUBSCRIPTION_PLANS:
         raise HTTPException(status_code=400, detail="Invalid subscription plan")
     plan = SUBSCRIPTION_PLANS[plan_tier]
+    get_stripe_api_key()
     try:
         # Create Stripe Checkout Session
         checkout_session = stripe.checkout.Session.create(
@@ -93,7 +103,7 @@ async def create_payment(
             mode="payment",
             success_url=os.getenv("FRONTEND_URL", "http://localhost:3000") + "/pricing?success=true",
             cancel_url=os.getenv("FRONTEND_URL", "http://localhost:3000") + "/pricing?cancel=true",
-            metadata={
+            notification_metadata={
                 "user_id": user.id,
                 "plan_tier": plan_tier,
                 "type": "subscription"
@@ -111,6 +121,7 @@ import hashlib
 
 @router.post("/webhook")
 async def handle_stripe_webhook(request: Request, session: AsyncSession = Depends(get_session)):
+    get_stripe_api_key()
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     endpoint_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -124,10 +135,10 @@ async def handle_stripe_webhook(request: Request, session: AsyncSession = Depend
 
     if event["type"] == "checkout.session.completed":
         session_obj = event["data"]["object"]
-        metadata = session_obj.get("metadata", {})
-        if metadata.get("type") == "subscription":
-            user_id = metadata.get("user_id")
-            plan_tier = metadata.get("plan_tier")
+        notification_metadata = session_obj.get("notification_metadata", {})
+        if notification_metadata.get("type") == "subscription":
+            user_id = notification_metadata.get("user_id")
+            plan_tier = notification_metadata.get("plan_tier")
             result = await session.execute(select(User).where(User.id == int(user_id)))
             user = result.scalar_one_or_none()
             if user:
@@ -135,7 +146,11 @@ async def handle_stripe_webhook(request: Request, session: AsyncSession = Depend
                 user.subscription_status = "active"
                 user.subscription_expires_at = datetime.utcnow() + timedelta(days=30)
                 session.add(user)
-                await session.commit()
+                try:
+                    await session.commit()
+                except Exception as db_exc:
+                    # Optionally log db_exc here
+                    raise HTTPException(status_code=500, detail=f"Database error during webhook: {str(db_exc)}")
     return {"status": "success"}
 
 @router.post("/cancel")
@@ -143,8 +158,11 @@ async def cancel_subscription(session: AsyncSession = Depends(get_session), user
     """Cancel user's subscription"""
     user.subscription_status = "cancelled"
     session.add(user)
-    await session.commit()
-    
+    try:
+        await session.commit()
+    except Exception as db_exc:
+        # Optionally log db_exc here
+        raise HTTPException(status_code=500, detail=f"Database error during cancellation: {str(db_exc)}")
     return {"message": "Subscription cancelled successfully"}
 
 @router.get("/usage")
@@ -164,11 +182,14 @@ async def get_usage_stats(session: AsyncSession = Depends(get_session), user: Us
     warning_threshold = limit * 0.8
     # Notification trigger for usage limit approaching
     if current_usage >= warning_threshold and current_usage < limit:
+        # Throttle: Only send a notification if none sent in the last 24 hours
+        from sqlalchemy import and_
+        twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
         notification_exists = await session.execute(
             select(Notification).where(
                 Notification.user_id == user.id,
                 Notification.type == "usage_limit",
-                Notification.read == False
+                Notification.created_at >= twenty_four_hours_ago
             )
         )
         exists = notification_exists.scalar_one_or_none()

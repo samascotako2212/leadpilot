@@ -1,3 +1,4 @@
+const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,7 +19,7 @@ export function AiMessageGenerator() {
 
   const generateMessageMutation = useMutation({
     mutationFn: async ({ leadInfo, tone }: { leadInfo: string; tone: string }) => {
-      const res = await apiRequest("POST", "/api/generate-message", { leadInfo, tone });
+  const res = await apiRequest("POST", `${apiUrl}/generate-message`, { leadInfo, tone });
       return await res.json();
     },
     onSuccess: (data) => {

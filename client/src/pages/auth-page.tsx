@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { LeadPilotLogo } from "@/components/ui/LeadPilotLogo";
 import { useAuth } from "@/hooks/use-auth";
 import { Redirect } from "wouter";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,24 +10,44 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Loader2 } from "lucide-react";
 
+
 export default function AuthPage() {
   const { user, loginMutation, registerMutation } = useAuth();
   const [loginData, setLoginData] = useState({ email: "", password: "" });
   const [registerData, setRegisterData] = useState({ email: "", password: "", subscriptionTier: "free" });
+  const navigate = useNavigate();
 
-  // Redirect if already authenticated
-  if (user) {
-    return <Redirect to="/" />;
-  }
+
+  // Redirect if already authenticated (moved to useEffect for reliability)
+  useEffect(() => {
+    if (user) {
+      navigate("/");
+    }
+  }, [user, navigate]);
+
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    loginMutation.mutate({ email: loginData.email, password: loginData.password });
+    loginMutation.mutate(
+      { email: loginData.email, password: loginData.password },
+      {
+        onSuccess: () => {
+          navigate("/");
+        },
+      }
+    );
   };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    registerMutation.mutate({ email: registerData.email, password: registerData.password });
+    registerMutation.mutate(
+      { email: registerData.email, password: registerData.password },
+      {
+        onSuccess: () => {
+          navigate("/auth");
+        },
+      }
+    );
   };
 
   return (

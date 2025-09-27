@@ -17,7 +17,7 @@ export function RecentCampaigns() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { data: campaigns, isLoading } = useQuery<Array<{id: string, name: string, description: string, status?: string}>>({
-    queryKey: ['http://localhost:8000/api/email_campaigns'],
+    queryKey: [`${apiUrl}/api/email-campaigns`],
   });
 
   // Edit dialog state
@@ -29,7 +29,7 @@ export function RecentCampaigns() {
   // Mutations
   const updateCampaignMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: { name: string; description: string } }) => {
-      const res = await apiRequest("PUT", `${apiUrl}/api/email-campaigns/${id}`, data);
+  const res = await apiRequest("PUT", `${apiUrl}/email-campaigns/${id}`, data);
       return await res.json();
     },
     onSuccess: () => {
@@ -43,7 +43,7 @@ export function RecentCampaigns() {
   });
   const deleteCampaignMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiRequest("DELETE", `${apiUrl}/api/email-campaigns/${id}`);
+  const res = await apiRequest("DELETE", `${apiUrl}/api/email-campaigns/${id}`);
       return await res.json();
     },
     onSuccess: () => {
@@ -131,7 +131,7 @@ export function RecentCampaigns() {
             <p className="text-sm text-muted-foreground mb-4" data-testid="text-no-campaigns-description">
               Create your first campaign to start reaching out to leads
             </p>
-            <Button data-testid="button-create-first-campaign">
+            <Button data-testid="button-create-first-campaign" style={{ display: 'none' }}>
               <i className="fas fa-plus mr-2"></i>
               Create Campaign
             </Button>

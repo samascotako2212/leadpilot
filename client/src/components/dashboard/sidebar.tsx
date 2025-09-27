@@ -1,13 +1,15 @@
+
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { LeadPilotLogo } from "@/components/ui/LeadPilotLogo";
+const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export function Sidebar() {
   const [location] = useLocation();
   
   const { data: usage } = useQuery<{tier: string, current_usage: number, limit: number, remaining: number}>({
-    queryKey: ["http://localhost:8800/api/subscriptions/usage"],
+    queryKey: [`${apiUrl}/api/subscriptions/usage`],
   });
 
   const navItems = [
@@ -54,19 +56,22 @@ export function Sidebar() {
             <span className="text-base font-bold capitalize text-cyan-700" data-testid="text-plan-name">
               {usage.tier} Plan
             </span>
-            <span className="text-xs text-cyan-900 font-semibold" data-testid="text-usage-current">
+            <span className={`text-xs font-semibold ${usage.current_usage > usage.limit ? 'text-red-700' : 'text-cyan-900'}`} data-testid="text-usage-current">
               {usage.current_usage}/{usage.limit}
+              {usage.current_usage > usage.limit && <span className="ml-2 text-red-600 font-bold">Over Limit</span>}
             </span>
           </div>
           <div className="w-full bg-cyan-100 rounded-full h-2">
             <div 
-              className="bg-cyan-400 h-2 rounded-full transition-all duration-300" 
+              className={`h-2 rounded-full transition-all duration-300 ${usage.current_usage > usage.limit ? 'bg-red-500' : 'bg-cyan-400'}`}
               style={{ width: `${Math.min(100, (usage.current_usage / usage.limit) * 100)}%` }}
               data-testid="progress-usage"
             ></div>
           </div>
-          <p className="text-xs text-cyan-700 mt-2 font-medium" data-testid="text-remaining-leads">
-            {usage.remaining} leads remaining this month
+          <p className={`text-xs mt-2 font-medium ${usage.current_usage > usage.limit ? 'text-red-700' : 'text-cyan-700'}`} data-testid="text-remaining-leads">
+            {usage.current_usage > usage.limit
+              ? `You are over your monthly limit!`
+              : `${usage.remaining} leads remaining this month`}
           </p>
         </div>
       )}

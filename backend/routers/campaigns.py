@@ -1,20 +1,107 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Path, BackgroundTasks
+from typing import List
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import Campaign, Lead, User, EmailCampaign, EmailLog, FollowUpEmail, FollowUpMessage
 from database import get_session, async_session
 from auth_utils import get_current_user
-from schemas import CampaignStats, EmailCampaignCreate
+from schemas import CampaignStats, EmailCampaignCreate, FollowUpEmailCreate, FollowUpEmailOut
 from datetime import datetime, timedelta 
 import os
-import logging 
-import requests
+import logging
+import asyncio
 from schemas import CampaignCreate, FollowUpMessageCreate
-from models import FollowUpMessage 
 
+from sqlalchemy.exc import NoResultFound
 
 router = APIRouter(prefix="/api", tags=["campaigns"])
+
+@router.post("/email-campaigns/{campaign_id}/followups", response_model=FollowUpEmailOut)
+async def create_followup_email(
+    campaign_id: int,
+    req: FollowUpEmailCreate = Body(...),
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user)
+):
+    # Ensure campaign exists and belongs to user
+    result = await session.execute(select(EmailCampaign).where(EmailCampaign.id == campaign_id, EmailCampaign.user_id == user.id))
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Email campaign not found")
+    followup = FollowUpEmail(
+        email_campaign_id=campaign_id,
+        subject=req.subject,
+        body=req.body,
+        delay_days=req.delay_days,
+        status="pending"
+    )
+    session.add(followup)
+    await session.commit()
+    await session.refresh(followup)
+    return followup
+
+@router.get("/email-campaigns/{campaign_id}/followups", response_model=List[FollowUpEmailOut])
+async def list_followup_emails(
+    campaign_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user)
+):
+    # Ensure campaign exists and belongs to user
+    result = await session.execute(select(EmailCampaign).where(EmailCampaign.id == campaign_id, EmailCampaign.user_id == user.id))
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Email campaign not found")
+    result = await session.execute(select(FollowUpEmail).where(FollowUpEmail.email_campaign_id == campaign_id))
+    followups = result.scalars().all()
+    return followups
+
+@router.put("/email-campaigns/{campaign_id}/followups/{followup_id}", response_model=FollowUpEmailOut)
+async def update_followup_email(
+    campaign_id: int,
+    followup_id: int,
+    req: FollowUpEmailCreate = Body(...),
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user)
+):
+    # Ensure campaign exists and belongs to user
+    result = await session.execute(select(EmailCampaign).where(EmailCampaign.id == campaign_id, EmailCampaign.user_id == user.id))
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Email campaign not found")
+    result = await session.execute(select(FollowUpEmail).where(FollowUpEmail.id == followup_id, FollowUpEmail.email_campaign_id == campaign_id))
+    followup = result.scalar_one_or_none()
+    if not followup:
+        raise HTTPException(status_code=404, detail="Follow-up email not found")
+    followup.subject = req.subject
+    followup.body = req.body
+    followup.delay_days = req.delay_days
+    session.add(followup)
+    await session.commit()
+    await session.refresh(followup)
+    return followup
+
+@router.delete("/email-campaigns/{campaign_id}/followups/{followup_id}")
+async def delete_followup_email(
+    campaign_id: int,
+    followup_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user)
+):
+    # Ensure campaign exists and belongs to user
+    result = await session.execute(select(EmailCampaign).where(EmailCampaign.id == campaign_id, EmailCampaign.user_id == user.id))
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Email campaign not found")
+    result = await session.execute(select(FollowUpEmail).where(FollowUpEmail.id == followup_id, FollowUpEmail.email_campaign_id == campaign_id))
+    followup = result.scalar_one_or_none()
+    if not followup:
+        raise HTTPException(status_code=404, detail="Follow-up email not found")
+    await session.delete(followup)
+    await session.commit()
+    return {"message": "Follow-up email deleted"}
+
+
 
 @router.get("/email-campaigns/performance")
 async def email_campaign_performance(session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
@@ -53,6 +140,7 @@ async def email_campaign_performance(session: AsyncSession = Depends(get_session
 
 
 
+
 @router.post("/email-campaigns")
 async def create_email_campaign(
     req: EmailCampaignCreate = Body(...),
@@ -70,7 +158,22 @@ async def create_email_campaign(
     await session.commit()
     await session.refresh(campaign)
 
-    return {"id": campaign.id, "message": "Email campaign created"}
+    # Store follow-up emails if provided
+    followups = []
+    if req.follow_ups:
+        for fu in req.follow_ups:
+            followup = FollowUpEmail(
+                email_campaign_id=campaign.id,
+                subject=fu.subject,
+                body=fu.body,
+                delay_days=fu.delay_days,
+                status="pending"
+            )
+            session.add(followup)
+            followups.append(followup)
+        await session.commit()
+
+    return {"id": campaign.id, "message": "Email campaign created", "followups": [f.id for f in followups]}
 
 @router.get("/email-campaigns")
 async def list_email_campaigns(session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
@@ -157,30 +260,46 @@ async def send_email_campaign(
             "Content-Type": "application/json"
         }
 
-        max_retries = 2
+        import httpx
+        max_retries = 3
+        backoff = 2
         for attempt in range(max_retries):
             try:
-                resp = requests.post(
-                    "https://api.apollo.io/v1/email/send",
-                    json=data,
-                    headers=headers,
-                    timeout=10
-                )
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        "https://api.apollo.io/v1/email/send",
+                        json=data,
+                        headers=headers
+                    )
                 if resp.status_code == 429:
                     logging.warning(f"Apollo rate limit hit for user {user.id}, lead {lead.id}. Attempt {attempt+1}/{max_retries}.")
                     status = "failed"
                     error = "Apollo rate limit exceeded"
                     failed_count += 1
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(backoff ** attempt)
+                        continue
                     break
                 status = "sent" if resp.status_code in [200, 201] else "failed"
                 error = None if status == "sent" else resp.text
                 if status == "sent" or attempt == max_retries - 1:
                     break
+            except httpx.RequestError as e:
+                status = "failed"
+                error = str(e)
+                logging.error(f"Apollo request error for user {user.id}, lead {lead.id}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(backoff ** attempt)
+                    continue
+                failed_count += 1
             except Exception as e:
                 status = "failed"
                 error = str(e)
-                if attempt == max_retries - 1:
-                    failed_count += 1
+                logging.error(f"Unexpected error for user {user.id}, lead {lead.id}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(backoff ** attempt)
+                    continue
+                failed_count += 1
 
         log = EmailLog(
             campaign_id=campaign.id,
@@ -193,6 +312,28 @@ async def send_email_campaign(
         session.add(log)
         logs.append(log)
 
+    await session.commit()
+
+    # Schedule follow-up emails for each lead
+    # Fetch follow-ups for this campaign
+    followups_result = await session.execute(select(FollowUpEmail).where(FollowUpEmail.email_campaign_id == campaign.id))
+    followups = followups_result.scalars().all()
+    now = datetime.utcnow()
+    for lead in leads:
+        last_scheduled = now
+        for fu in followups:
+            scheduled_time = last_scheduled + timedelta(days=fu.delay_days)
+            # Create a new FollowUpEmail record for this lead (if you want per-lead tracking, otherwise just set scheduled_at)
+            fu_instance = FollowUpEmail(
+                email_campaign_id=campaign.id,
+                subject=fu.subject,
+                body=fu.body,
+                delay_days=fu.delay_days,
+                scheduled_at=scheduled_time,
+                status="scheduled"
+            )
+            session.add(fu_instance)
+            last_scheduled = scheduled_time
     await session.commit()
 
     # Notify user if any emails failed
@@ -208,7 +349,7 @@ async def send_email_campaign(
         await session.commit()
 
     return {
-        "message": f"Sent {len(logs)} emails",
+        "message": f"Sent {len(logs)} emails and scheduled follow-ups for {len(leads)} leads.",
         "results": [{"lead_id": l.lead_id, "status": l.status, "error": l.error} for l in logs]
     }
 @router.get("/email-campaigns/{campaign_id}/logs")
@@ -286,8 +427,16 @@ async def delete_email_campaign(
     campaign = result.scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Email campaign not found")
-    if campaign.status != "draft":
-        raise HTTPException(status_code=400, detail="Only draft campaigns can be deleted")
     await session.delete(campaign)
     await session.commit()
     return {"message": "Email campaign deleted"}
+
+@router.get("/campaigns/stats")
+async def get_campaign_stats(session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
+    # Example: return total campaigns for the user
+    result = await session.execute(select(Campaign).where(Campaign.user_id == user.id))
+    campaigns = result.scalars().all()
+    return {
+        "total_campaigns": len(campaigns),
+        # Add more stats as needed
+    }

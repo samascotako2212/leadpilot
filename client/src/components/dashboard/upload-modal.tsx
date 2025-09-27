@@ -1,5 +1,6 @@
+const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -9,7 +10,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -22,17 +22,13 @@ interface UploadModalProps {
 
 export function UploadModal({ isOpen, onClose }: UploadModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [selectedCampaign, setSelectedCampaign] = useState<string>("");
+  const [batch_name, setBatch_name] = useState<string>("");
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: campaigns } = useQuery<Array<{id: string, name: string}>>({
-  queryKey: ["http://localhost:8000/api/email-campaigns"],
-  });
-
   const uploadMutation = useMutation({
-    mutationFn: async ({ campaignId, csvData }: { campaignId: string; csvData: string }) => {
-      const res = await apiRequest("POST", "http://localhost:8000/api/leads/upload", { campaignId, csvData });
+    mutationFn: async ({ csvData, batch_name }: { csvData: string; batch_name: string }) => {
+      const res = await apiRequest("POST", `${apiUrl}/api/leads/upload`, { csvData, batch_name });
       return await res.json();
     },
     onSuccess: (data) => {
@@ -40,12 +36,12 @@ export function UploadModal({ isOpen, onClose }: UploadModalProps) {
         title: "Upload successful",
         description: data.message,
       });
-      queryClient.invalidateQueries({ queryKey: ["http://localhost:8000/api/campaigns/stats"] });
-      queryClient.invalidateQueries({ queryKey: ["http://localhost:8000/api/activity"] });
-      queryClient.invalidateQueries({ queryKey: ["http://localhost:8000/api/usage"] });
+      queryClient.invalidateQueries({ queryKey: [`${apiUrl}/api/campaigns/stats`] });
+      queryClient.invalidateQueries({ queryKey: [`${apiUrl}/api/activity`] });
+      queryClient.invalidateQueries({ queryKey: [`${apiUrl}/api/usage`] });
       onClose();
       setSelectedFile(null);
-      setSelectedCampaign("");
+      setBatch_name("");
     },
     onError: (error: Error) => {
       toast({
@@ -70,10 +66,10 @@ export function UploadModal({ isOpen, onClose }: UploadModalProps) {
   };
 
   const handleUpload = async () => {
-    if (!selectedFile || !selectedCampaign) {
+    if (!selectedFile || !batch_name.trim()) {
       toast({
         title: "Missing information",
-        description: "Please select a file and campaign",
+        description: "Please select a file and enter a batch name",
         variant: "destructive",
       });
       return;
@@ -81,7 +77,7 @@ export function UploadModal({ isOpen, onClose }: UploadModalProps) {
 
     try {
       const csvContent = await selectedFile.text();
-      uploadMutation.mutate({ campaignId: selectedCampaign, csvData: csvContent });
+      uploadMutation.mutate({ csvData: csvContent, batch_name: batch_name.trim() });
     } catch (error) {
       toast({
         title: "File read error",
@@ -97,25 +93,21 @@ export function UploadModal({ isOpen, onClose }: UploadModalProps) {
         <DialogHeader>
           <DialogTitle data-testid="text-upload-modal-title">Upload Leads</DialogTitle>
           <DialogDescription data-testid="text-upload-modal-description">
-            Import leads from a CSV file to your campaign
+            Import leads from a CSV file
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <div>
-            <Label htmlFor="campaign-select" data-testid="label-campaign-select">Select Campaign</Label>
-            <Select value={selectedCampaign} onValueChange={setSelectedCampaign}>
-              <SelectTrigger data-testid="select-campaign">
-                <SelectValue placeholder="Choose a campaign" />
-              </SelectTrigger>
-              <SelectContent>
-                {campaigns?.map((campaign: any) => (
-                  <SelectItem key={campaign.id} value={campaign.id}>
-                    {campaign.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label htmlFor="batch-name" data-testid="label-batch-name">Batch Name</Label>
+            <Input
+              id="batch-name"
+              type="text"
+              placeholder="Enter batch name"
+              value={batch_name}
+              onChange={(e) => setBatch_name(e.target.value)}
+              data-testid="input-batch-name"
+            />
           </div>
 
           <div>
@@ -154,7 +146,7 @@ export function UploadModal({ isOpen, onClose }: UploadModalProps) {
           </Button>
           <Button
             onClick={handleUpload}
-            disabled={uploadMutation.isPending || !selectedFile || !selectedCampaign}
+            disabled={uploadMutation.isPending || !selectedFile || !batch_name.trim()}
             data-testid="button-upload-file"
           >
             {uploadMutation.isPending ? (

@@ -1,11 +1,31 @@
+// Define user types locally
+export type SelectUser = {
+  id: number;
+  email: string;
+  subscription_tier?: string;
+};
+
+export type InsertUser = {
+  email: string;
+  password: string;
+  subscriptionTier?: string;
+};
+
+const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
 import { createContext, ReactNode, useContext } from "react";
 import {
   useQuery,
   useMutation,
   UseMutationResult,
 } from "@tanstack/react-query";
-import { insertUserSchema, User as SelectUser, InsertUser } from "@shared/schema";
 import { getQueryFn, apiRequest, queryClient } from "../lib/queryClient";
+
+// DEBUG: Log token and user for troubleshooting
+function logAuthDebug(user: any) {
+  const token = localStorage.getItem("access_token");
+  // eslint-disable-next-line no-console
+  console.log("[Auth Debug] user:", user, "token:", token);
+}
 import { useToast } from "@/hooks/use-toast";
 
 type AuthContextType = {
@@ -26,26 +46,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     data: user,
     error,
     isLoading,
-  } = useQuery<SelectUser | undefined, Error>({
-    queryKey: ["/api/user"],
+    refetch: refetchUser
+  } = useQuery<any, Error>({
+    queryKey: [`${apiUrl}/user`],
     queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
+  // Debug log user and token on every render
+  logAuthDebug(user);
+
   const loginMutation = useMutation({
     mutationFn: async (credentials: LoginData) => {
-      const res = await apiRequest("POST", "/api/login", credentials);
+      const res = await apiRequest("POST", `${apiUrl}/login`, credentials);
       const data = await res.json();
-      
       // Store token in localStorage
       if (data.access_token) {
         localStorage.setItem("access_token", data.access_token);
       }
-      
       return data;
     },
-    onSuccess: (data: any) => {
-      // Get user data after successful login
-      queryClient.invalidateQueries({ queryKey: ["/api/user"] });
+    onSuccess: async (data: any) => {
+      // Refetch user immediately after login to update state
+      await refetchUser();
+      queryClient.invalidateQueries({ queryKey: ["/user"] });
     },
     onError: (error: Error) => {
       toast({
@@ -58,19 +81,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const registerMutation = useMutation({
     mutationFn: async (credentials: InsertUser) => {
-      const res = await apiRequest("POST", "/api/register", credentials);
+      const res = await apiRequest("POST", `${apiUrl}/register`, credentials);
       const data = await res.json();
-      
       // Store token in localStorage
       if (data.access_token) {
         localStorage.setItem("access_token", data.access_token);
       }
-      
       return data;
     },
-    onSuccess: (data: any) => {
-      // Get user data after successful registration
-      queryClient.invalidateQueries({ queryKey: ["/api/user"] });
+    onSuccess: async (data: any) => {
+      // Refetch user immediately after registration to update state
+      await refetchUser();
+      queryClient.invalidateQueries({ queryKey: ["/user"] });
     },
     onError: (error: Error) => {
       toast({
@@ -83,17 +105,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logoutMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/logout");
+  await apiRequest("POST", `${apiUrl}/logout`);
     },
     onSuccess: () => {
       // Clear token from localStorage
       localStorage.removeItem("access_token");
-      queryClient.setQueryData(["/api/user"], null);
+  queryClient.setQueryData(["/auth"], null);
     },
     onError: (error: Error) => {
       // Clear token even on error
       localStorage.removeItem("access_token");
-      queryClient.setQueryData(["/api/user"], null);
+  queryClient.setQueryData(["/auth"], null);
       toast({
         title: "Logout failed",
         description: error.message,
